@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { useFormik } from 'formik'
 import * as Yup from 'yup'
-import InputMask from 'react-input-mask'
+import MaskedInput from '../MaskedInput'
+import Toast from '../Toast'
 
 import { formataPreco, getPriceTotal } from '../../utils/index'
 import Button from '../Button/index'
@@ -25,11 +26,43 @@ const Checkout = () => {
   )
   const [purchase, { data, isSuccess, isLoading }] = usePurchaseMutation()
   const [toPayment, setToPayment] = useState(false)
+  const [toastVisible, setToastVisible] = useState(false)
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
 
   const dispatch = useDispatch()
   const totalPrices = getPriceTotal(items)
 
-  const buttonCLick = () => {
+  const buttonCLick = async () => {
+    // Mark all delivery fields as touched to trigger validation
+    form.setTouched({
+      destinatario: true,
+      endereco: true,
+      cidade: true,
+      cep: true,
+      numero: true
+    })
+
+    // Trigger validation manually
+    await form.validateForm()
+
+    // Get delivery field errors with their specific messages
+    const deliveryFieldErrors = Object.entries(form.errors)
+      .filter(([field]) =>
+        ['destinatario', 'endereco', 'cidade', 'cep', 'numero'].includes(field)
+      )
+      .map(([field, error]) => `- ${getFieldLabel(field)}: ${error}`)
+
+    if (deliveryFieldErrors.length > 0) {
+      const errorMessages = [
+        'Por favor, corrija os seguintes erros:',
+        ...deliveryFieldErrors
+      ]
+      setValidationErrors(errorMessages)
+      setToastVisible(true)
+      return
+    }
+
+    // If all validations pass
     setToPayment(true)
     dispatch(openPurchaseFunction())
   }
@@ -48,6 +81,7 @@ const Checkout = () => {
     dispatch(close())
     dispatch(clear())
     setToPayment(false)
+    setValidationErrors([])
     form.resetForm()
   }
 
@@ -71,22 +105,62 @@ const Checkout = () => {
       destinatario: Yup.string().required('O campo é obrigatorio'),
       endereco: Yup.string().required('O campo é obrigatorio'),
       cidade: Yup.string().required('O campo é obrigatorio'),
-      cep: Yup.string().required('O campo é obrigatorio'),
-      numero: Yup.string().required('O campo é obrigatorio'),
+      cep: Yup.string()
+        .required('O campo é obrigatorio')
+        .matches(/^\d{5}-\d{3}$/, 'CEP inválido - Use o formato: 00000-000'),
+      numero: Yup.string()
+        .required('O campo é obrigatorio')
+        .min(1, 'Número inválido')
+        .max(4, 'Número muito longo'),
       nameCard: Yup.string().when((values, schema) =>
         toPayment ? schema.required('O campo é obrigatorio') : schema
       ),
       numberCard: Yup.string().when((values, schema) =>
-        toPayment ? schema.required('O campo é obrigatorio') : schema
+        toPayment
+          ? schema
+            .required('O campo é obrigatorio')
+            .matches(
+              /^\d{4}\s\d{4}\s\d{4}\s\d{4}$/,
+              'Número do cartão inválido - Digite 16 dígitos'
+            )
+          : schema
       ),
       cardCode: Yup.string().when((values, schema) =>
-        toPayment ? schema.required('O campo é obrigatorio') : schema
+        toPayment
+          ? schema
+            .required('O campo é obrigatorio')
+            .matches(/^\d{3}$/, 'CVV inválido - Digite 3 dígitos')
+          : schema
       ),
       expiresMonth: Yup.string().when((values, schema) =>
-        toPayment ? schema.required('O campo é obrigatorio') : schema
+        toPayment
+          ? schema
+            .required('O campo é obrigatorio')
+            .matches(
+              /^(0[1-9]|1[0-2])$/,
+              'Mês inválido - Use valores entre 01 e 12'
+            )
+          : schema
       ),
       expiresYear: Yup.string().when((values, schema) =>
-        toPayment ? schema.required('O campo é obrigatorio') : schema
+        toPayment
+          ? schema
+            .required('O campo é obrigatorio')
+            .matches(/^\d{2}$/, 'Ano inválido - Use 2 dígitos')
+            .test('expiration', 'Cartão vencido', function (value) {
+              if (!value) return true
+              const currentYear = new Date().getFullYear() % 100
+              const month = this.parent.expiresMonth
+              const year = parseInt(value)
+
+              if (year < currentYear) return false
+              if (year === currentYear && month) {
+                const currentMonth = new Date().getMonth() + 1
+                return parseInt(month) >= currentMonth
+              }
+              return true
+            })
+          : schema
       )
     }),
     onSubmit: (values) => {
@@ -129,18 +203,78 @@ const Checkout = () => {
     return hasError
   }
 
+  const getFieldLabel = (fieldName: string): string => {
+    const fieldLabels: Record<string, string> = {
+      destinatario: 'Destinatário',
+      endereco: 'Endereço',
+      cidade: 'Cidade',
+      cep: 'CEP',
+      numero: 'Número',
+      complemento: 'Complemento',
+      nameCard: 'Nome no cartão',
+      numberCard: 'Número do cartão',
+      cardCode: 'CVV',
+      expiresMonth: 'Mês de vencimento',
+      expiresYear: 'Ano de vencimento'
+    }
+
+    return fieldLabels[fieldName] || fieldName
+  }
+
   useEffect(() => {
     if (isSuccess) {
       dispatch(finish())
     }
   }, [dispatch, isSuccess])
+  // Handle form submission
+  const handleFormSubmit = async () => {
+    if (!isLoading) {
+      if (toPayment) {
+        // Mark all payment fields as touched to trigger validation
+        form.setTouched(
+          {
+            nameCard: true,
+            numberCard: true,
+            cardCode: true,
+            expiresMonth: true,
+            expiresYear: true
+          },
+          true
+        )
 
-  console.log(form.isValid)
-  console.log(form.dirty)
-  console.log(toPayment)
+        const paymentFieldErrors = Object.entries(form.errors)
+          .filter(([field]) =>
+            [
+              'nameCard',
+              'numberCard',
+              'cardCode',
+              'expiresMonth',
+              'expiresYear'
+            ].includes(field)
+          )
+          .map(([field, error]) => `- ${getFieldLabel(field)}: ${error}`)
+
+        if (paymentFieldErrors.length > 0) {
+          const errorMessages = [
+            'Por favor, corrija os seguintes erros no cartão:',
+            ...paymentFieldErrors
+          ]
+          setValidationErrors(errorMessages)
+          setToastVisible(true)
+          return
+        }
+      }
+      form.handleSubmit()
+    }
+  }
 
   return (
     <>
+      <Toast
+        messages={validationErrors}
+        onClose={() => setToastVisible(false)}
+        isVisible={toastVisible}
+      />
       <>
         <S.ContainerEntrega
           title="Entrega"
@@ -190,7 +324,7 @@ const Checkout = () => {
                 <div>
                   <S.InputGroup>
                     <S.LabelGroup htmlFor="cep">CEP</S.LabelGroup>
-                    <InputMask
+                    <MaskedInput
                       className={chekInputHasError('cep') ? 'error' : ''}
                       type="text"
                       id="cep"
@@ -205,7 +339,7 @@ const Checkout = () => {
                 <div>
                   <S.InputGroup>
                     <S.LabelGroup htmlFor="numero">Número</S.LabelGroup>
-                    <InputMask
+                    <MaskedInput
                       className={chekInputHasError('numero') ? 'error' : ''}
                       type="text"
                       id="numero"
@@ -234,7 +368,7 @@ const Checkout = () => {
             </S.Forms>
             <Button
               type="button"
-              disabled={!form.dirty || !form.isValid || toPayment}
+              disabled={toPayment} // Apenas desabilita se já estiver na etapa de pagamento
               onClick={buttonCLick}
               title="Clique aqui para adicionar forma de pagamento"
             >
@@ -275,7 +409,7 @@ const Checkout = () => {
                     <S.LabelGroup htmlFor="numberCard">
                       Número do cartão
                     </S.LabelGroup>
-                    <InputMask
+                    <MaskedInput
                       className={chekInputHasError('numberCard') ? 'error' : ''}
                       type="text"
                       id="numberCard"
@@ -290,7 +424,7 @@ const Checkout = () => {
                 <S.CardCode>
                   <S.InputGroup>
                     <S.LabelGroup htmlFor="cardCode">CVV</S.LabelGroup>
-                    <InputMask
+                    <MaskedInput
                       className={chekInputHasError('cardCode') ? 'error' : ''}
                       type="text"
                       id="cardCode"
@@ -309,7 +443,7 @@ const Checkout = () => {
                     <S.LabelGroup htmlFor="expiresMonth">
                       Mês de vencimento
                     </S.LabelGroup>
-                    <InputMask
+                    <MaskedInput
                       className={
                         chekInputHasError('expiresMonth') ? 'error' : ''
                       }
@@ -328,7 +462,7 @@ const Checkout = () => {
                     <S.LabelGroup htmlFor="expiresYear">
                       Ano de vencimento
                     </S.LabelGroup>
-                    <InputMask
+                    <MaskedInput
                       className={
                         chekInputHasError('expiresYear') ? 'error' : ''
                       }
@@ -346,11 +480,7 @@ const Checkout = () => {
             </S.Forms>
             <Button
               type="submit"
-              onClick={() => {
-                if (!isLoading) {
-                  form.handleSubmit()
-                }
-              }}
+              onClick={handleFormSubmit}
               title="Clique aqui para finalizar o pedido!"
               disabled={isLoading}
             >
